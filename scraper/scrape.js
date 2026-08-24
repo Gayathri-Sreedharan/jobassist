@@ -6,22 +6,38 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const ADZUNA_APP_ID = process.env.ADZUNA_APP_ID;
 const ADZUNA_APP_KEY = process.env.ADZUNA_APP_KEY;
 
-// India
 const COUNTRY = "in";
 
-// Jobs returned per Adzuna page
 const RESULTS_PER_PAGE = 50;
 
-// Keep this conservative initially.
-// We can increase this after the first successful run.
-const MAX_PAGES_PER_CATEGORY = 2;
+// Start small.
+// Once this works, we can expand the keyword list and pages.
+const MAX_PAGES_PER_KEYWORD = 2;
 
-// Delay between requests
 const REQUEST_DELAY_MS = 2000;
 
-// Retry settings for temporary Adzuna errors
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 5000;
+
+
+// ============================================================
+// SEARCH KEYWORDS
+// ============================================================
+
+const SEARCH_KEYWORDS = [
+  "data scientist",
+  "data analyst",
+  "data engineer",
+  "software engineer",
+  "software developer",
+  "python developer",
+  "machine learning",
+  "artificial intelligence",
+  "AI engineer",
+  "business analyst",
+  "devops",
+  "cloud engineer"
+];
 
 
 // ============================================================
@@ -49,6 +65,7 @@ function fetchJson(url, attempt = 1) {
           "User-Agent": "JobAssist/1.0"
         }
       },
+
       response => {
 
         let data = "";
@@ -75,12 +92,17 @@ function fetchJson(url, attempt = 1) {
                 `Retrying (${attempt}/${MAX_RETRIES})...`
               );
 
-              await sleep(RETRY_DELAY_MS * attempt);
+              await sleep(
+                RETRY_DELAY_MS * attempt
+              );
 
               try {
 
                 const result =
-                  await fetchJson(url, attempt + 1);
+                  await fetchJson(
+                    url,
+                    attempt + 1
+                  );
 
                 resolve(result);
 
@@ -122,7 +144,9 @@ function fetchJson(url, attempt = 1) {
           // Parse JSON
           try {
 
-            resolve(JSON.parse(data));
+            resolve(
+              JSON.parse(data)
+            );
 
           } catch (error) {
 
@@ -137,6 +161,7 @@ function fetchJson(url, attempt = 1) {
         });
 
       }
+
     ).on("error", async error => {
 
       if (attempt < MAX_RETRIES) {
@@ -145,12 +170,17 @@ function fetchJson(url, attempt = 1) {
           `Network error. Retrying (${attempt}/${MAX_RETRIES})...`
         );
 
-        await sleep(RETRY_DELAY_MS * attempt);
+        await sleep(
+          RETRY_DELAY_MS * attempt
+        );
 
         try {
 
           const result =
-            await fetchJson(url, attempt + 1);
+            await fetchJson(
+              url,
+              attempt + 1
+            );
 
           resolve(result);
 
@@ -176,12 +206,16 @@ function fetchJson(url, attempt = 1) {
 // BUILD ADZUNA SEARCH URL
 // ============================================================
 
-function buildAdzunaUrl(page, params = {}) {
+function buildAdzunaUrl(
+  page,
+  keyword
+) {
 
   const url =
     new URL(
       `https://api.adzuna.com/v1/api/jobs/${COUNTRY}/search/${page}`
     );
+
 
   url.searchParams.set(
     "app_id",
@@ -199,27 +233,14 @@ function buildAdzunaUrl(page, params = {}) {
   );
 
   url.searchParams.set(
+    "what",
+    keyword
+  );
+
+  url.searchParams.set(
     "content-type",
     "application/json"
   );
-
-
-  for (const [key, value] of Object.entries(params)) {
-
-    if (
-      value !== undefined &&
-      value !== null &&
-      value !== ""
-    ) {
-
-      url.searchParams.set(
-        key,
-        value
-      );
-
-    }
-
-  }
 
 
   return url.toString();
@@ -227,31 +248,10 @@ function buildAdzunaUrl(page, params = {}) {
 
 
 // ============================================================
-// GET ADZUNA CATEGORIES
+// NORMALIZE JOB
 // ============================================================
 
-async function getCategories() {
-
-  const url =
-    `https://api.adzuna.com/v1/api/jobs/${COUNTRY}/categories` +
-    `?app_id=${encodeURIComponent(ADZUNA_APP_ID)}` +
-    `&app_key=${encodeURIComponent(ADZUNA_APP_KEY)}` +
-    `&content-type=application/json`;
-
-
-  const data =
-    await fetchJson(url);
-
-
-  return data.results || [];
-}
-
-
-// ============================================================
-// CONVERT ADZUNA JOB INTO OUR SUPABASE FORMAT
-// ============================================================
-
-function normalizeJob(job, category) {
+function normalizeJob(job) {
 
   const company =
     job.company &&
@@ -274,10 +274,7 @@ function normalizeJob(job, category) {
 
 
   /*
-   * This is our deduplication key.
-   *
-   * Same company + same title + same location
-   * = treated as the same job.
+   * Used by Supabase to prevent duplicates.
    */
   const uniqueKey =
     `${company}|${job.title || ""}|${location}`
@@ -291,13 +288,15 @@ function normalizeJob(job, category) {
       company,
 
     title:
-      job.title || "Untitled",
+      job.title ||
+      "Untitled",
 
     location:
       location,
 
     job_url:
-      job.redirect_url || null,
+      job.redirect_url ||
+      null,
 
     posted_date:
       postedDate,
@@ -388,9 +387,120 @@ async function saveJobs(jobs) {
 
 
   console.log(
-    `✓ Saved ${jobs.length} jobs`
+    `✓ Supabase saved ${jobs.length} jobs`
   );
 
+}
+
+
+// ============================================================
+// SEARCH ONE KEYWORD
+// ============================================================
+
+async function searchKeyword(
+  keyword
+) {
+
+  let keywordJobs =
+    0;
+
+
+  for (
+    let page = 1;
+    page <= MAX_PAGES_PER_KEYWORD;
+    page++
+  ) {
+
+    console.log("");
+    console.log(
+      `Keyword: ${keyword}`
+    );
+
+    console.log(
+      `Page: ${page}`
+    );
+
+
+    try {
+
+      const url =
+        buildAdzunaUrl(
+          page,
+          keyword
+        );
+
+
+      const data =
+        await fetchJson(
+          url
+        );
+
+
+      const results =
+        data.results || [];
+
+
+      console.log(
+        `Adzuna returned: ${results.length} jobs`
+      );
+
+
+      /*
+       * If Adzuna returns zero jobs,
+       * don't request another page.
+       */
+      if (!results.length) {
+
+        console.log(
+          `No more results for "${keyword}".`
+        );
+
+        break;
+
+      }
+
+
+      const jobs =
+        results.map(
+          normalizeJob
+        );
+
+
+      await saveJobs(
+        jobs
+      );
+
+
+      keywordJobs +=
+        jobs.length;
+
+
+      await sleep(
+        REQUEST_DELAY_MS
+      );
+
+
+    } catch (error) {
+
+      console.error(
+        `Failed keyword "${keyword}", page ${page}:`
+      );
+
+      console.error(
+        error.message
+      );
+
+      /*
+       * Continue with the next keyword.
+       */
+      break;
+
+    }
+
+  }
+
+
+  return keywordJobs;
 }
 
 
@@ -401,7 +511,7 @@ async function saveJobs(jobs) {
 async function main() {
 
   // ----------------------------------------------------------
-  // CHECK REQUIRED ENVIRONMENT VARIABLES
+  // CHECK ENVIRONMENT VARIABLES
   // ----------------------------------------------------------
 
   if (!SUPABASE_URL) {
@@ -441,159 +551,74 @@ async function main() {
 
 
   console.log("");
-  console.log("======================================");
-  console.log("JobAssist — India Job Sourcing");
-  console.log("======================================");
+  console.log(
+    "======================================"
+  );
+
+  console.log(
+    "JobAssist — India Job Sourcing"
+  );
+
+  console.log(
+    "======================================"
+  );
+
   console.log("");
 
 
-  // ----------------------------------------------------------
-  // GET CATEGORIES
-  // ----------------------------------------------------------
-
   console.log(
-    "Getting Adzuna categories..."
+    `Search keywords: ${SEARCH_KEYWORDS.length}`
   );
 
-
-  let categories;
-
-
-  try {
-
-    categories =
-      await getCategories();
-
-  } catch (error) {
-
-    console.error(
-      "Could not retrieve Adzuna categories."
-    );
-
-    console.error(
-      error.message
-    );
-
-    throw error;
-
-  }
-
-
   console.log(
-    `Found ${categories.length} categories`
+    `Pages per keyword: ${MAX_PAGES_PER_KEYWORD}`
   );
 
+  console.log("");
 
-  // ----------------------------------------------------------
-  // PROCESS CATEGORIES
-  // ----------------------------------------------------------
 
   let totalJobs =
     0;
 
 
-  for (const category of categories) {
+  // ----------------------------------------------------------
+  // SEARCH ALL KEYWORDS
+  // ----------------------------------------------------------
 
-    console.log("");
-    console.log(
-      `Category: ${category.label}`
-    );
+  for (
+    const keyword of SEARCH_KEYWORDS
+  ) {
 
-
-    for (
-      let page = 1;
-      page <= MAX_PAGES_PER_CATEGORY;
-      page++
-    ) {
-
-      console.log(
-        `Fetching page ${page}...`
+    const count =
+      await searchKeyword(
+        keyword
       );
 
 
-      try {
-
-        const url =
-          buildAdzunaUrl(
-            page,
-            {
-              category:
-                category.tag
-            }
-          );
+    totalJobs +=
+      count;
 
 
-        const data =
-          await fetchJson(url);
+    console.log("");
+    console.log(
+      `Completed "${keyword}" — ${count} jobs processed`
+    );
 
-
-        const results =
-          data.results || [];
-
-
-        if (!results.length) {
-
-          console.log(
-            "No more jobs in this category."
-          );
-
-          break;
-
-        }
-
-
-        const jobs =
-          results.map(
-            job =>
-              normalizeJob(
-                job,
-                category
-              )
-          );
-
-
-        await saveJobs(
-          jobs
-        );
-
-
-        totalJobs +=
-          jobs.length;
-
-
-        await sleep(
-          REQUEST_DELAY_MS
-        );
-
-      } catch (error) {
-
-        console.error(
-          `Failed page ${page} of ${category.label}:`
-        );
-
-        console.error(
-          error.message
-        );
-
-        /*
-         * Don't stop the entire scraper because
-         * one category/page failed.
-         */
-        continue;
-
-      }
-
-    }
+    console.log(
+      "--------------------------------------"
+    );
 
   }
 
 
   // ----------------------------------------------------------
-  // COMPLETION
+  // FINAL RESULT
   // ----------------------------------------------------------
 
   console.log("");
-  console.log("======================================");
+  console.log(
+    "======================================"
+  );
 
   console.log(
     `Collection completed. Jobs processed: ${totalJobs}`
