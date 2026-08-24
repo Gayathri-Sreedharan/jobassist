@@ -2,24 +2,30 @@ const https = require("https");
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+
 const ADZUNA_APP_ID = process.env.ADZUNA_APP_ID;
 const ADZUNA_APP_KEY = process.env.ADZUNA_APP_KEY;
 
+// India
 const COUNTRY = "in";
+
+// Jobs returned per Adzuna page
 const RESULTS_PER_PAGE = 50;
 
-// IMPORTANT:
-// Keep this small while testing.
-// We can increase this later.
+// Keep this conservative initially.
+// We can increase this after the first successful run.
 const MAX_PAGES_PER_CATEGORY = 2;
 
+// Delay between requests
 const REQUEST_DELAY_MS = 2000;
+
+// Retry settings for temporary Adzuna errors
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 5000;
 
 
 // ============================================================
-// BASIC HELPERS
+// HELPERS
 // ============================================================
 
 function sleep(ms) {
@@ -32,6 +38,7 @@ function sleep(ms) {
 // ============================================================
 
 function fetchJson(url, attempt = 1) {
+
   return new Promise((resolve, reject) => {
 
     https.get(
@@ -52,7 +59,7 @@ function fetchJson(url, attempt = 1) {
 
         response.on("end", async () => {
 
-          // Temporary Adzuna/server errors
+          // Temporary errors
           if (
             response.statusCode === 429 ||
             response.statusCode === 500 ||
@@ -71,10 +78,16 @@ function fetchJson(url, attempt = 1) {
               await sleep(RETRY_DELAY_MS * attempt);
 
               try {
-                const result = await fetchJson(url, attempt + 1);
+
+                const result =
+                  await fetchJson(url, attempt + 1);
+
                 resolve(result);
+
               } catch (error) {
+
                 reject(error);
+
               }
 
               return;
@@ -91,7 +104,10 @@ function fetchJson(url, attempt = 1) {
 
 
           // Other HTTP errors
-          if (response.statusCode < 200 || response.statusCode >= 300) {
+          if (
+            response.statusCode < 200 ||
+            response.statusCode >= 300
+          ) {
 
             reject(
               new Error(
@@ -132,10 +148,16 @@ function fetchJson(url, attempt = 1) {
         await sleep(RETRY_DELAY_MS * attempt);
 
         try {
-          const result = await fetchJson(url, attempt + 1);
+
+          const result =
+            await fetchJson(url, attempt + 1);
+
           resolve(result);
+
         } catch (retryError) {
+
           reject(retryError);
+
         }
 
       } else {
@@ -151,7 +173,7 @@ function fetchJson(url, attempt = 1) {
 
 
 // ============================================================
-// ADZUNA URL
+// BUILD ADZUNA SEARCH URL
 // ============================================================
 
 function buildAdzunaUrl(page, params = {}) {
@@ -190,7 +212,10 @@ function buildAdzunaUrl(page, params = {}) {
       value !== ""
     ) {
 
-      url.searchParams.set(key, value);
+      url.searchParams.set(
+        key,
+        value
+      );
 
     }
 
@@ -214,14 +239,16 @@ async function getCategories() {
     `&content-type=application/json`;
 
 
-  const data = await fetchJson(url);
+  const data =
+    await fetchJson(url);
+
 
   return data.results || [];
 }
 
 
 // ============================================================
-// NORMALIZE JOB
+// CONVERT ADZUNA JOB INTO OUR SUPABASE FORMAT
 // ============================================================
 
 function normalizeJob(job, category) {
@@ -230,88 +257,73 @@ function normalizeJob(job, category) {
     job.company &&
     job.company.display_name
       ? job.company.display_name
-      : null;
+      : "Unknown";
 
 
   const location =
     job.location &&
     job.location.display_name
       ? job.location.display_name
+      : "";
+
+
+  const postedDate =
+    job.created
+      ? job.created.substring(0, 10)
       : null;
 
 
-  const categoryName =
-    job.category &&
-    job.category.label
-      ? job.category.label
-      : category.label;
-
-
-  const categoryTag =
-    job.category &&
-    job.category.tag
-      ? job.category.tag
-      : category.tag;
+  /*
+   * This is our deduplication key.
+   *
+   * Same company + same title + same location
+   * = treated as the same job.
+   */
+  const uniqueKey =
+    `${company}|${job.title || ""}|${location}`
+      .toLowerCase()
+      .trim();
 
 
   return {
-
-    external_id:
-      `adzuna_${job.id}`,
-
-    source:
-      "adzuna",
-
-    source_job_id:
-      String(job.id),
 
     company:
       company,
 
     title:
-      job.title || null,
+      job.title || "Untitled",
 
     location:
       location,
 
-    country:
-      "India",
-
-    description:
-      job.description || null,
-
     job_url:
       job.redirect_url || null,
 
-    category:
-      categoryName,
+    posted_date:
+      postedDate,
 
-    category_tag:
-      categoryTag,
+    source:
+      "adzuna",
 
-    salary_min:
-      job.salary_min || null,
+    experience:
+      null,
 
-    salary_max:
-      job.salary_max || null,
+    key_skills:
+      null,
 
-    contract_type:
-      job.contract_type || null,
+    employment_type:
+      job.contract_type ||
+      job.contract_time ||
+      null,
 
-    contract_time:
-      job.contract_time || null,
+    description:
+      job.description ||
+      null,
 
-    posted_at:
-      job.created || null,
-
-    last_seen_at:
-      new Date().toISOString(),
-
-    is_active:
-      true
+    unique_key:
+      uniqueKey
 
   };
-
 }
 
 
@@ -322,37 +334,44 @@ function normalizeJob(job, category) {
 async function saveJobs(jobs) {
 
   if (!jobs.length) {
+
+    console.log(
+      "No jobs to save."
+    );
+
     return;
+
   }
 
 
-  const response = await fetch(
-    `${SUPABASE_URL}/rest/v1/jobs?on_conflict=external_id`,
-    {
+  const response =
+    await fetch(
+      `${SUPABASE_URL}/rest/v1/jobs?on_conflict=unique_key`,
+      {
 
-      method: "POST",
+        method: "POST",
 
-      headers: {
+        headers: {
 
-        apikey:
-          SUPABASE_SERVICE_KEY,
+          apikey:
+            SUPABASE_SERVICE_KEY,
 
-        Authorization:
-          `Bearer ${SUPABASE_SERVICE_KEY}`,
+          Authorization:
+            `Bearer ${SUPABASE_SERVICE_KEY}`,
 
-        "Content-Type":
-          "application/json",
+          "Content-Type":
+            "application/json",
 
-        Prefer:
-          "resolution=merge-duplicates"
+          Prefer:
+            "resolution=merge-duplicates"
 
-      },
+        },
 
-      body:
-        JSON.stringify(jobs)
+        body:
+          JSON.stringify(jobs)
 
-    }
-  );
+      }
+    );
 
 
   const responseText =
@@ -382,23 +401,42 @@ async function saveJobs(jobs) {
 async function main() {
 
   // ----------------------------------------------------------
-  // Check environment variables
+  // CHECK REQUIRED ENVIRONMENT VARIABLES
   // ----------------------------------------------------------
 
   if (!SUPABASE_URL) {
-    throw new Error("SUPABASE_URL is missing");
+
+    throw new Error(
+      "SUPABASE_URL is missing"
+    );
+
   }
+
 
   if (!SUPABASE_SERVICE_KEY) {
-    throw new Error("SUPABASE_SERVICE_KEY is missing");
+
+    throw new Error(
+      "SUPABASE_SERVICE_KEY is missing"
+    );
+
   }
+
 
   if (!ADZUNA_APP_ID) {
-    throw new Error("ADZUNA_APP_ID is missing");
+
+    throw new Error(
+      "ADZUNA_APP_ID is missing"
+    );
+
   }
 
+
   if (!ADZUNA_APP_KEY) {
-    throw new Error("ADZUNA_APP_KEY is missing");
+
+    throw new Error(
+      "ADZUNA_APP_KEY is missing"
+    );
+
   }
 
 
@@ -410,7 +448,7 @@ async function main() {
 
 
   // ----------------------------------------------------------
-  // Get categories
+  // GET CATEGORIES
   // ----------------------------------------------------------
 
   console.log(
@@ -447,10 +485,11 @@ async function main() {
 
 
   // ----------------------------------------------------------
-  // Process categories
+  // PROCESS CATEGORIES
   // ----------------------------------------------------------
 
-  let totalJobs = 0;
+  let totalJobs =
+    0;
 
 
   for (const category of categories) {
@@ -478,7 +517,8 @@ async function main() {
           buildAdzunaUrl(
             page,
             {
-              category: category.tag
+              category:
+                category.tag
             }
           );
 
@@ -512,10 +552,13 @@ async function main() {
           );
 
 
-        await saveJobs(jobs);
+        await saveJobs(
+          jobs
+        );
 
 
-        totalJobs += jobs.length;
+        totalJobs +=
+          jobs.length;
 
 
         await sleep(
@@ -532,7 +575,10 @@ async function main() {
           error.message
         );
 
-        // Continue with the next page/category.
+        /*
+         * Don't stop the entire scraper because
+         * one category/page failed.
+         */
         continue;
 
       }
@@ -542,23 +588,42 @@ async function main() {
   }
 
 
+  // ----------------------------------------------------------
+  // COMPLETION
+  // ----------------------------------------------------------
+
   console.log("");
   console.log("======================================");
+
   console.log(
     `Collection completed. Jobs processed: ${totalJobs}`
   );
-  console.log("======================================");
+
+  console.log(
+    "======================================"
+  );
+
   console.log("");
 
 }
 
 
+// ============================================================
+// START
+// ============================================================
+
 main()
   .catch(error => {
 
     console.error("");
-    console.error("JobAssist failed:");
-    console.error(error);
+    console.error(
+      "JobAssist failed:"
+    );
+
+    console.error(
+      error
+    );
+
     console.error("");
 
     process.exit(1);
