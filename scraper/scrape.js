@@ -283,17 +283,13 @@ function normalizeJob(job) {
 
 
   /*
-   * This is the field currently used by Supabase
-   * for duplicate detection.
+   * Kept for backward compatibility.
    *
    * IMPORTANT:
-   * Supabase is using:
+   * This is no longer used as the unique identifier.
+   * Uniqueness is now based on:
    *
-   * on_conflict=unique_key
-   *
-   * Therefore we must make sure no two jobs
-   * in the SAME INSERT batch have the same
-   * unique_key.
+   * source + external_id
    */
   const uniqueKey =
     `${company}|${job.title || ""}|${location}`
@@ -365,27 +361,38 @@ function deduplicateJobs(jobs) {
 
   for (const job of jobs) {
 
-    /*
-     * Supabase ON CONFLICT is based on unique_key.
-     *
-     * Therefore deduplicate using unique_key,
-     * NOT external_id.
-     */
-    const key =
-      job.unique_key;
+    // --------------------------------------------------------
+    // EXTERNAL ID IS REQUIRED
+    // --------------------------------------------------------
 
-
-    // Skip jobs without a valid unique key
-    if (!key) {
+    if (!job.external_id) {
 
       console.warn(
-        "Skipping job because unique_key is missing."
+        "Skipping job because external_id is missing."
       );
 
       continue;
 
     }
 
+
+    /*
+     * IMPORTANT:
+     *
+     * Supabase uniqueness is now:
+     *
+     * source + external_id
+     *
+     * Therefore the in-memory deduplication must use
+     * the exact same logical key.
+     */
+    const key =
+      `${job.source}|${job.external_id}`;
+
+
+    // --------------------------------------------------------
+    // REMOVE DUPLICATES FROM SAME BATCH
+    // --------------------------------------------------------
 
     if (
       uniqueJobsMap.has(key)
@@ -394,7 +401,7 @@ function deduplicateJobs(jobs) {
       duplicateCount++;
 
       console.log(
-        `Duplicate job found and skipped: ${key}`
+        `Duplicate job skipped: ${key}`
       );
 
       continue;
@@ -411,6 +418,7 @@ function deduplicateJobs(jobs) {
 
 
   return {
+
     jobs:
       Array.from(
         uniqueJobsMap.values()
@@ -437,15 +445,18 @@ async function saveJobs(jobs) {
     );
 
     return {
+
       saved: 0,
+
       duplicates: 0
+
     };
 
   }
 
 
   // ----------------------------------------------------------
-  // REMOVE DUPLICATES BEFORE SUPABASE UPSERT
+  // DEDUPLICATE BEFORE SUPABASE
   // ----------------------------------------------------------
 
   const {
@@ -477,8 +488,12 @@ async function saveJobs(jobs) {
     );
 
     return {
+
       saved: 0,
-      duplicates: duplicateCount
+
+      duplicates:
+        duplicateCount
+
     };
 
   }
@@ -488,9 +503,20 @@ async function saveJobs(jobs) {
   // SUPABASE UPSERT
   // ----------------------------------------------------------
 
+  /*
+   * IMPORTANT:
+   *
+   * Supabase constraint:
+   *
+   * UNIQUE (source, external_id)
+   *
+   * Therefore on_conflict MUST match:
+   *
+   * source,external_id
+   */
   const response =
     await fetch(
-      `${SUPABASE_URL}/rest/v1/jobs?on_conflict=unique_key`,
+      `${SUPABASE_URL}/rest/v1/jobs?on_conflict=source,external_id`,
       {
 
         method: "POST",
@@ -602,7 +628,7 @@ async function searchKeyword(
 
 
       // ------------------------------------------------------
-      // FETCH ADZUNA RESULTS
+      // FETCH ADZUNA
       // ------------------------------------------------------
 
       const data =
@@ -640,7 +666,7 @@ async function searchKeyword(
 
 
       // ------------------------------------------------------
-      // NORMALIZE JOBS
+      // NORMALIZE
       // ------------------------------------------------------
 
       const jobs =
@@ -650,7 +676,7 @@ async function searchKeyword(
 
 
       // ------------------------------------------------------
-      // SAVE JOBS
+      // SAVE TO SUPABASE
       // ------------------------------------------------------
 
       try {
@@ -670,6 +696,12 @@ async function searchKeyword(
 
       } catch (supabaseError) {
 
+        /*
+         * The whole batch failed.
+         *
+         * Count the jobs as failed rather than pretending
+         * they were successfully processed.
+         */
         jobsFailed +=
           jobs.length;
 
@@ -682,16 +714,11 @@ async function searchKeyword(
           supabaseError.message
         );
 
-        /*
-         * Continue with the next page.
-         * We don't stop the entire keyword because
-         * one Supabase batch failed.
-         */
       }
 
 
       // ------------------------------------------------------
-      // DELAY BETWEEN ADZUNA REQUESTS
+      // DELAY
       // ------------------------------------------------------
 
       await sleep(
@@ -793,6 +820,7 @@ async function main() {
   // ----------------------------------------------------------
 
   console.log("");
+
   console.log(
     "======================================"
   );
