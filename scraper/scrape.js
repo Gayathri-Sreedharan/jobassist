@@ -284,6 +284,9 @@ function normalizeJob(job) {
 
   return {
 
+external_id:
+    String(job.id),
+
     company:
       company,
 
