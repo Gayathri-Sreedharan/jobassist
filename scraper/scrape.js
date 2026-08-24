@@ -1,190 +1,250 @@
-/**
- * JOBASSIST SCRAPER
- * Pulls jobs from official, free, terms-of-service-friendly sources:
- *   - Adzuna (broad search API)
- *   - Greenhouse (per-company public job boards)
- *   - Ashby (per-company public job boards)
- *   - Lever (per-company public job boards)
- *
- * Deliberately does NOT scrape LinkedIn/Naukri directly — those require
- * browser automation against sites whose terms forbid it, which makes them
- * unreliable to maintain solo. Use the manual check step in the guide
- * instead for those two.
- *
- * Run with: node scrape.js
- * Requires environment variables (set in GitHub Actions secrets):
- *   SUPABASE_URL, SUPABASE_SERVICE_KEY, ADZUNA_APP_ID, ADZUNA_APP_KEY
- */
-
-import { createClient } from '@supabase/supabase-js';
+const https = require("https");
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const ADZUNA_APP_ID = process.env.ADZUNA_APP_ID;
 const ADZUNA_APP_KEY = process.env.ADZUNA_APP_KEY;
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+// India-wide collection.
+// We deliberately use broad categories rather than manually maintained job titles.
+const COUNTRY = "in";
+const RESULTS_PER_PAGE = 50;
 
-// ---- EDIT THESE TWO LISTS TO CUSTOMIZE WHAT GETS TRACKED -------------------
-const ADZUNA_KEYWORDS = [
-  'Data Scientist',
-  'GenAI Engineer',
-  'Machine Learning Engineer',
-];
+// Keep this small initially.
+// Once the first run works, we can expand coverage.
+const MAX_PAGES_PER_CATEGORY = 3;
 
-const GREENHOUSE_SLUGS = [
-  // 'stripe', 'notion', 'razorpay'  <- add company slugs here
-];
+function fetchJson(url) {
+  return new Promise((resolve, reject) => {
+    https
+      .get(url, {
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "JobAssist/1.0",
+        },
+      }, (res) => {
+        let data = "";
 
-const ASHBY_SLUGS = [
-  // 'cursor', 'linear'  <- add company slugs here
-];
+        res.on("data", chunk => {
+          data += chunk;
+        });
 
-const LEVER_SLUGS = [
-  // 'companyname'  <- add company slugs here
-];
-// -----------------------------------------------------------------------------
+        res.on("end", () => {
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            reject(
+              new Error(`HTTP ${res.statusCode}: ${data.substring(0, 500)}`)
+            );
+            return;
+          }
 
-function makeKey(company, title, location) {
-  return `${company}|${title}|${location}`.toLowerCase().trim();
+          try {
+            resolve(JSON.parse(data));
+          } catch (error) {
+            reject(new Error("Invalid JSON response"));
+          }
+        });
+      })
+      .on("error", reject);
+  });
 }
 
-async function fetchAdzuna(keyword) {
-  const url = `https://api.adzuna.com/v1/api/jobs/in/search/1?app_id=${ADZUNA_APP_ID}&app_key=${ADZUNA_APP_KEY}&what=${encodeURIComponent(keyword)}&results_per_page=50&content-type=application/json`;
-  try {
-    const res = await fetch(url);
-    const data = await res.json();
-    if (!data.results) return [];
-    return data.results.map(job => ({
-      company: job.company?.display_name || 'Unknown',
-      title: job.title || '',
-      location: job.location?.display_name || '',
-      job_url: job.redirect_url || '',
-      posted_date: job.created ? job.created.substring(0, 10) : null,
-      source: 'adzuna',
-      experience: null,
-      key_skills: null,
-      employment_type: job.contract_time || null,
-      description: (job.description || '').substring(0, 1000),
-    }));
-  } catch (e) {
-    console.error(`Adzuna error for "${keyword}":`, e.message);
-    return [];
-  }
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function fetchGreenhouse(slug) {
-  const url = `https://boards-api.greenhouse.io/v1/boards/${slug}/jobs?content=true`;
-  try {
-    const res = await fetch(url);
-    const data = await res.json();
-    if (!data.jobs) return [];
-    return data.jobs.map(job => ({
-      company: slug,
-      title: job.title || '',
-      location: job.location?.name || '',
-      job_url: job.absolute_url || '',
-      posted_date: job.updated_at ? job.updated_at.substring(0, 10) : null,
-      source: 'greenhouse',
-      experience: null,
-      key_skills: null,
-      employment_type: null,
-      description: (job.content || '').replace(/<[^>]*>/g, '').substring(0, 1000),
-    }));
-  } catch (e) {
-    console.error(`Greenhouse error for "${slug}":`, e.message);
-    return [];
+function buildAdzunaUrl(page, params = {}) {
+  const url = new URL(
+    `https://api.adzuna.com/v1/api/jobs/${COUNTRY}/search/${page}`
+  );
+
+  url.searchParams.set("app_id", ADZUNA_APP_ID);
+  url.searchParams.set("app_key", ADZUNA_APP_KEY);
+  url.searchParams.set("results_per_page", RESULTS_PER_PAGE);
+  url.searchParams.set("content-type", "application/json");
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") {
+      url.searchParams.set(key, value);
+    }
   }
+
+  return url.toString();
 }
 
-async function fetchAshby(slug) {
-  const url = `https://api.ashbyhq.com/posting-api/job-board/${slug}`;
-  try {
-    const res = await fetch(url);
-    const data = await res.json();
-    if (!data.jobs) return [];
-    return data.jobs.map(job => ({
-      company: slug,
-      title: job.title || '',
-      location: job.location || '',
-      job_url: job.jobUrl || '',
-      posted_date: job.publishedAt ? job.publishedAt.substring(0, 10) : null,
-      source: 'ashby',
-      experience: null,
-      key_skills: null,
-      employment_type: job.employmentType || null,
-      description: (job.descriptionPlain || '').substring(0, 1000),
-    }));
-  } catch (e) {
-    console.error(`Ashby error for "${slug}":`, e.message);
-    return [];
-  }
+async function getCategories() {
+  const url =
+    `https://api.adzuna.com/v1/api/jobs/${COUNTRY}/categories` +
+    `?app_id=${encodeURIComponent(ADZUNA_APP_ID)}` +
+    `&app_key=${encodeURIComponent(ADZUNA_APP_KEY)}` +
+    `&content-type=application/json`;
+
+  const data = await fetchJson(url);
+
+  return data.results || [];
 }
 
-async function fetchLever(slug) {
-  const url = `https://api.lever.co/v0/postings/${slug}?mode=json`;
-  try {
-    const res = await fetch(url);
-    const data = await res.json();
-    if (!Array.isArray(data)) return [];
-    return data.map(job => ({
-      company: slug,
-      title: job.text || '',
-      location: job.categories?.location || '',
-      job_url: job.hostedUrl || '',
-      posted_date: job.createdAt ? new Date(job.createdAt).toISOString().substring(0, 10) : null,
-      source: 'lever',
-      experience: null,
-      key_skills: null,
-      employment_type: job.categories?.commitment || null,
-      description: (job.descriptionPlain || '').substring(0, 1000),
-    }));
-  } catch (e) {
-    console.error(`Lever error for "${slug}":`, e.message);
-    return [];
+function normalizeJob(job, category) {
+  const company =
+    job.company && job.company.display_name
+      ? job.company.display_name
+      : null;
+
+  const location =
+    job.location && job.location.display_name
+      ? job.location.display_name
+      : null;
+
+  const categoryName =
+    job.category && job.category.label
+      ? job.category.label
+      : category.label;
+
+  return {
+    external_id: `adzuna_${job.id}`,
+    source: "adzuna",
+    source_job_id: String(job.id),
+
+    title: job.title || null,
+    company: company,
+
+    location: location,
+    country: "India",
+
+    description: job.description || null,
+    job_url: job.redirect_url || null,
+
+    category: categoryName,
+    category_tag:
+      job.category && job.category.tag
+        ? job.category.tag
+        : category.tag,
+
+    salary_min: job.salary_min || null,
+    salary_max: job.salary_max || null,
+
+    contract_type: job.contract_type || null,
+    contract_time: job.contract_time || null,
+
+    posted_at: job.created || null,
+
+    last_seen_at: new Date().toISOString(),
+    is_active: true,
+  };
+}
+
+async function saveJobs(jobs) {
+  if (!jobs.length) {
+    return;
   }
+
+  const response = await fetch(
+    `${SUPABASE_URL}/rest/v1/jobs?on_conflict=external_id`,
+    {
+      method: "POST",
+
+      headers: {
+        apikey: SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates",
+      },
+
+      body: JSON.stringify(jobs),
+    }
+  );
+
+  const responseText = await response.text();
+
+  if (!response.ok) {
+    throw new Error(
+      `Supabase error ${response.status}: ${responseText}`
+    );
+  }
+
+  console.log(`Saved ${jobs.length} jobs`);
 }
 
 async function main() {
-  console.log('Starting scrape...');
-  let allJobs = [];
-
-  for (const kw of ADZUNA_KEYWORDS) {
-    allJobs = allJobs.concat(await fetchAdzuna(kw));
-  }
-  for (const slug of GREENHOUSE_SLUGS) {
-    allJobs = allJobs.concat(await fetchGreenhouse(slug));
-  }
-  for (const slug of ASHBY_SLUGS) {
-    allJobs = allJobs.concat(await fetchAshby(slug));
-  }
-  for (const slug of LEVER_SLUGS) {
-    allJobs = allJobs.concat(await fetchLever(slug));
+  if (!SUPABASE_URL) {
+    throw new Error("SUPABASE_URL is missing");
   }
 
-  console.log(`Fetched ${allJobs.length} raw postings. Deduplicating and saving...`);
-
-  // Add unique_key and dedupe within this batch
-  const seen = new Set();
-  const rows = [];
-  for (const job of allJobs) {
-    const key = makeKey(job.company, job.title, job.location);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    rows.push({ ...job, unique_key: key });
+  if (!SUPABASE_SERVICE_KEY) {
+    throw new Error("SUPABASE_SERVICE_KEY is missing");
   }
 
-  // Upsert: insert new jobs, skip ones that already exist (matched by unique_key)
-  const { error, count } = await supabase
-    .from('jobs')
-    .upsert(rows, { onConflict: 'unique_key', ignoreDuplicates: true, count: 'exact' });
-
-  if (error) {
-    console.error('Error saving to database:', error.message);
-    process.exit(1);
+  if (!ADZUNA_APP_ID) {
+    throw new Error("ADZUNA_APP_ID is missing");
   }
 
-  console.log(`Done. ${rows.length} unique postings processed.`);
+  if (!ADZUNA_APP_KEY) {
+    throw new Error("ADZUNA_APP_KEY is missing");
+  }
+
+  console.log("======================================");
+  console.log("JobAssist — India Job Sourcing");
+  console.log("======================================");
+
+  console.log("Getting Adzuna categories...");
+
+  const categories = await getCategories();
+
+  console.log(`Found ${categories.length} categories`);
+
+  for (const category of categories) {
+    console.log(
+      `\nCollecting category: ${category.label} (${category.tag})`
+    );
+
+    for (
+      let page = 1;
+      page <= MAX_PAGES_PER_CATEGORY;
+      page++
+    ) {
+      console.log(`Fetching page ${page}...`);
+
+      try {
+        const url = buildAdzunaUrl(page, {
+          category: category.tag,
+        });
+
+        const data = await fetchJson(url);
+
+        const results = data.results || [];
+
+        if (!results.length) {
+          console.log("No more jobs in this category.");
+          break;
+        }
+
+        const jobs = results.map(job =>
+          normalizeJob(job, category)
+        );
+
+        await saveJobs(jobs);
+
+        // Avoid hammering the API.
+        await sleep(1500);
+
+      } catch (error) {
+        console.error(
+          `Failed category ${category.tag}, page ${page}:`,
+          error.message
+        );
+
+        // Continue with the next page/category rather than
+        // stopping the entire collection process.
+      }
+    }
+  }
+
+  console.log("\n======================================");
+  console.log("JobAssist collection completed.");
+  console.log("======================================");
 }
 
-main();
+main().catch(error => {
+  console.error("\nJobAssist failed:");
+  console.error(error);
+  process.exit(1);
+});
