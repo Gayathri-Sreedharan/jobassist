@@ -1,0 +1,13 @@
+{
+  "name": "jobassist-scraper",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Pulls jobs from Adzuna, Greenhouse, Ashby, Lever into Supabase",
+  "main": "scrape.js",
+  "scripts": {
+    "start": "node scrape.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0"
+  }
+}
