@@ -76,7 +76,10 @@ function fetchJson(url, attempt = 1) {
 
         response.on("end", async () => {
 
-          // Temporary errors
+          // --------------------------------------------------
+          // TEMPORARY HTTP ERRORS
+          // --------------------------------------------------
+
           if (
             response.statusCode === 429 ||
             response.statusCode === 500 ||
@@ -125,7 +128,10 @@ function fetchJson(url, attempt = 1) {
           }
 
 
-          // Other HTTP errors
+          // --------------------------------------------------
+          // OTHER HTTP ERRORS
+          // --------------------------------------------------
+
           if (
             response.statusCode < 200 ||
             response.statusCode >= 300
@@ -141,7 +147,10 @@ function fetchJson(url, attempt = 1) {
           }
 
 
-          // Parse JSON
+          // --------------------------------------------------
+          // PARSE JSON
+          // --------------------------------------------------
+
           try {
 
             resolve(
@@ -274,7 +283,17 @@ function normalizeJob(job) {
 
 
   /*
-   * Used by Supabase to prevent duplicates.
+   * This is the field currently used by Supabase
+   * for duplicate detection.
+   *
+   * IMPORTANT:
+   * Supabase is using:
+   *
+   * on_conflict=unique_key
+   *
+   * Therefore we must make sure no two jobs
+   * in the SAME INSERT batch have the same
+   * unique_key.
    */
   const uniqueKey =
     `${company}|${job.title || ""}|${location}`
@@ -284,8 +303,10 @@ function normalizeJob(job) {
 
   return {
 
-external_id:
-    String(job.id),
+    external_id:
+      job.id
+        ? String(job.id)
+        : null,
 
     company:
       company,
@@ -330,6 +351,80 @@ external_id:
 
 
 // ============================================================
+// DEDUPLICATE JOBS
+// ============================================================
+
+function deduplicateJobs(jobs) {
+
+  const uniqueJobsMap =
+    new Map();
+
+  let duplicateCount =
+    0;
+
+
+  for (const job of jobs) {
+
+    /*
+     * Supabase ON CONFLICT is based on unique_key.
+     *
+     * Therefore deduplicate using unique_key,
+     * NOT external_id.
+     */
+    const key =
+      job.unique_key;
+
+
+    // Skip jobs without a valid unique key
+    if (!key) {
+
+      console.warn(
+        "Skipping job because unique_key is missing."
+      );
+
+      continue;
+
+    }
+
+
+    if (
+      uniqueJobsMap.has(key)
+    ) {
+
+      duplicateCount++;
+
+      console.log(
+        `Duplicate job found and skipped: ${key}`
+      );
+
+      continue;
+
+    }
+
+
+    uniqueJobsMap.set(
+      key,
+      job
+    );
+
+  }
+
+
+  return {
+    jobs:
+      Array.from(
+        uniqueJobsMap.values()
+      ),
+
+    duplicateCount:
+      duplicateCount
+
+  };
+
+}
+
+
+// ============================================================
 // SAVE JOBS TO SUPABASE
 // ============================================================
 
@@ -341,10 +436,57 @@ async function saveJobs(jobs) {
       "No jobs to save."
     );
 
-    return;
+    return {
+      saved: 0,
+      duplicates: 0
+    };
 
   }
 
+
+  // ----------------------------------------------------------
+  // REMOVE DUPLICATES BEFORE SUPABASE UPSERT
+  // ----------------------------------------------------------
+
+  const {
+    jobs: uniqueJobs,
+    duplicateCount
+  } =
+    deduplicateJobs(
+      jobs
+    );
+
+
+  console.log(
+    `Jobs received: ${jobs.length}`
+  );
+
+  console.log(
+    `Unique jobs to save: ${uniqueJobs.length}`
+  );
+
+  console.log(
+    `Duplicates removed: ${duplicateCount}`
+  );
+
+
+  if (!uniqueJobs.length) {
+
+    console.log(
+      "No unique jobs available to save."
+    );
+
+    return {
+      saved: 0,
+      duplicates: duplicateCount
+    };
+
+  }
+
+
+  // ----------------------------------------------------------
+  // SUPABASE UPSERT
+  // ----------------------------------------------------------
 
   const response =
     await fetch(
@@ -370,7 +512,9 @@ async function saveJobs(jobs) {
         },
 
         body:
-          JSON.stringify(jobs)
+          JSON.stringify(
+            uniqueJobs
+          )
 
       }
     );
@@ -390,8 +534,19 @@ async function saveJobs(jobs) {
 
 
   console.log(
-    `✓ Supabase saved ${jobs.length} jobs`
+    `✓ Supabase saved ${uniqueJobs.length} unique jobs`
   );
+
+
+  return {
+
+    saved:
+      uniqueJobs.length,
+
+    duplicates:
+      duplicateCount
+
+  };
 
 }
 
@@ -404,7 +559,16 @@ async function searchKeyword(
   keyword
 ) {
 
-  let keywordJobs =
+  let jobsFetched =
+    0;
+
+  let jobsSaved =
+    0;
+
+  let jobsDuplicates =
+    0;
+
+  let jobsFailed =
     0;
 
 
@@ -426,12 +590,20 @@ async function searchKeyword(
 
     try {
 
+      // ------------------------------------------------------
+      // BUILD URL
+      // ------------------------------------------------------
+
       const url =
         buildAdzunaUrl(
           page,
           keyword
         );
 
+
+      // ------------------------------------------------------
+      // FETCH ADZUNA RESULTS
+      // ------------------------------------------------------
 
       const data =
         await fetchJson(
@@ -448,10 +620,10 @@ async function searchKeyword(
       );
 
 
-      /*
-       * If Adzuna returns zero jobs,
-       * don't request another page.
-       */
+      // ------------------------------------------------------
+      // STOP IF NO RESULTS
+      // ------------------------------------------------------
+
       if (!results.length) {
 
         console.log(
@@ -463,20 +635,64 @@ async function searchKeyword(
       }
 
 
+      jobsFetched +=
+        results.length;
+
+
+      // ------------------------------------------------------
+      // NORMALIZE JOBS
+      // ------------------------------------------------------
+
       const jobs =
         results.map(
           normalizeJob
         );
 
 
-      await saveJobs(
-        jobs
-      );
+      // ------------------------------------------------------
+      // SAVE JOBS
+      // ------------------------------------------------------
+
+      try {
+
+        const saveResult =
+          await saveJobs(
+            jobs
+          );
 
 
-      keywordJobs +=
-        jobs.length;
+        jobsSaved +=
+          saveResult.saved;
 
+        jobsDuplicates +=
+          saveResult.duplicates;
+
+
+      } catch (supabaseError) {
+
+        jobsFailed +=
+          jobs.length;
+
+
+        console.error(
+          `Supabase save failed for "${keyword}", page ${page}:`
+        );
+
+        console.error(
+          supabaseError.message
+        );
+
+        /*
+         * Continue with the next page.
+         * We don't stop the entire keyword because
+         * one Supabase batch failed.
+         */
+      }
+
+
+      // ------------------------------------------------------
+      // DELAY BETWEEN ADZUNA REQUESTS
+      // ------------------------------------------------------
 
       await sleep(
         REQUEST_DELAY_MS
@@ -493,6 +709,10 @@ async function searchKeyword(
         error.message
       );
 
+      jobsFailed +=
+        1;
+
+
       /*
        * Continue with the next keyword.
        */
@@ -503,7 +723,22 @@ async function searchKeyword(
   }
 
 
-  return keywordJobs;
+  return {
+
+    fetched:
+      jobsFetched,
+
+    saved:
+      jobsSaved,
+
+    duplicates:
+      jobsDuplicates,
+
+    failed:
+      jobsFailed
+
+  };
+
 }
 
 
@@ -553,6 +788,10 @@ async function main() {
   }
 
 
+  // ----------------------------------------------------------
+  // HEADER
+  // ----------------------------------------------------------
+
   console.log("");
   console.log(
     "======================================"
@@ -580,7 +819,20 @@ async function main() {
   console.log("");
 
 
-  let totalJobs =
+  // ----------------------------------------------------------
+  // TOTAL COUNTERS
+  // ----------------------------------------------------------
+
+  let totalFetched =
+    0;
+
+  let totalSaved =
+    0;
+
+  let totalDuplicates =
+    0;
+
+  let totalFailed =
     0;
 
 
@@ -592,19 +844,49 @@ async function main() {
     const keyword of SEARCH_KEYWORDS
   ) {
 
-    const count =
+    const result =
       await searchKeyword(
         keyword
       );
 
 
-    totalJobs +=
-      count;
+    totalFetched +=
+      result.fetched;
 
+    totalSaved +=
+      result.saved;
+
+    totalDuplicates +=
+      result.duplicates;
+
+    totalFailed +=
+      result.failed;
+
+
+    // --------------------------------------------------------
+    // KEYWORD SUMMARY
+    // --------------------------------------------------------
 
     console.log("");
+
     console.log(
-      `Completed "${keyword}" — ${count} jobs processed`
+      `Completed "${keyword}"`
+    );
+
+    console.log(
+      `  Fetched: ${result.fetched}`
+    );
+
+    console.log(
+      `  Saved: ${result.saved}`
+    );
+
+    console.log(
+      `  Duplicates removed: ${result.duplicates}`
+    );
+
+    console.log(
+      `  Failed: ${result.failed}`
     );
 
     console.log(
@@ -619,13 +901,38 @@ async function main() {
   // ----------------------------------------------------------
 
   console.log("");
+
   console.log(
     "======================================"
   );
 
   console.log(
-    `Collection completed. Jobs processed: ${totalJobs}`
+    "Collection completed"
   );
+
+  console.log(
+    "======================================"
+  );
+
+  console.log("");
+
+  console.log(
+    `Total jobs fetched: ${totalFetched}`
+  );
+
+  console.log(
+    `Total jobs saved: ${totalSaved}`
+  );
+
+  console.log(
+    `Total duplicates removed: ${totalDuplicates}`
+  );
+
+  console.log(
+    `Total failed: ${totalFailed}`
+  );
+
+  console.log("");
 
   console.log(
     "======================================"
@@ -644,6 +951,7 @@ main()
   .catch(error => {
 
     console.error("");
+
     console.error(
       "JobAssist failed:"
     );
