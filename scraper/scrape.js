@@ -36,7 +36,11 @@ const SEARCH_KEYWORDS = [
   "AI engineer",
   "business analyst",
   "devops",
-  "cloud engineer"
+  "cloud engineer","Power BI","Tableau",
+"Cybersecurity",
+"Generative AI",
+"NLP",
+"Cloud Architect"
 ];
 
 
