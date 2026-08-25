@@ -319,7 +319,7 @@ A successful run will look similar to:
 JobAssist — India Job Sourcing
 ======================================
 
-Search keywords: 12
+Search keywords: 18
 
 Pages per keyword: 2
 
