@@ -1,4 +1,4 @@
-# JobAssist – Phase 1
+# JobAssist
 
 ## India-Wide Automated Job Sourcing
 
