@@ -28,7 +28,12 @@ The system searches using multiple job keywords such as:
 - Business Analyst
 - DevOps
 - Cloud Engineer
-
+- Power BI
+- Tableau
+- Cybersecurity
+- Generative AI
+- NLP
+- Cloud Architect
 ---
 
 # 2. How does it work?
