@@ -247,17 +247,17 @@ The country code is:
 
 The scraper currently uses:
 
-- 12 search keywords
+- 18 search keywords
 - 50 results per page
 - 2 pages per keyword
 
 This means the theoretical maximum number of results is:
 
-12 keywords × 2 pages × 50 jobs
+18 keywords × 2 pages × 50 jobs
 
-= 1,200 results per run
+= 1,800 results per run
 
-This does not mean 1,200 unique jobs will always be stored because the same job may appear under multiple keywords.
+This does not mean 1,800 unique jobs will always be stored because the same job may appear under multiple keywords.
 
 Duplicate prevention is built into the database.
 
