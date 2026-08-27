@@ -197,5 +197,8 @@ const KEYWORDS = {
     "Engineering Fresher Hiring"
   ]
 };
-
-module.exports = KEYWORDS;
+const ALL_KEYWORDS = Object.values(KEYWORDS).flat();
+module.exports = {
+  ...KEYWORDS,
+  ALL_KEYWORDS
+};

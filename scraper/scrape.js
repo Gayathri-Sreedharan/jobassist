@@ -18,7 +18,12 @@ const REQUEST_DELAY_MS = 2000;
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 5000;
-
+const SOURCES = require("./sources");
+const { isWithinLastDays } = require("./utils/date-utils");
+const { extractExperience } = require("./utils/experience");
+const { extractSkills } = require("./utils/skills");
+const KEYWORDS = require("./config/keywords");
+const { DAYS_BACK } = require("./config/settings");
 
 // ============================================================
 // SEARCH KEYWORDS
